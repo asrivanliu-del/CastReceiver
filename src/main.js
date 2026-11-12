@@ -1,4 +1,5 @@
 import { SoundTouch } from 'soundtouchjs';
+import { getKaraokeCharacterState, getSubtitleTime, waitForMediaMetadata } from './castPlayback.js';
 import './style.css';
 
 const NAMESPACE = 'urn:x-cast:com.mintplayer.cast';
@@ -8,6 +9,7 @@ const audio = document.querySelector('#audio');
 const cover = document.querySelector('#cover');
 const lyrics = document.querySelector('#lyrics');
 const message = document.querySelector('#message');
+const stage = document.querySelector('#stage');
 
 const elements = new Map();
 let media = null;
@@ -23,6 +25,15 @@ let pitchInput = null;
 let pitchOutput = null;
 let previousTranspose = 0;
 let statusTimer = 0;
+let audioSourceChangeId = 0;
+let lyricsAnimationFrame = 0;
+let renderedKaraokeLine = null;
+let renderedTimedLine = null;
+let activeCharacterIndex = -1;
+let lastKaraokeTime = 0;
+let mirrorPeerConnection = null;
+let mirrorStream = null;
+let mirrorNegotiationId = 0;
 
 function sendStatus(senderId, state, error) {
   const data = {
@@ -42,6 +53,113 @@ function sendStatus(senderId, state, error) {
 function setMessage(text) {
   message.textContent = text;
   message.hidden = !text;
+}
+
+function waitForIceGatheringComplete(peerConnection) {
+  if (peerConnection.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      window.clearTimeout(timer);
+      peerConnection.removeEventListener('icegatheringstatechange', onStateChange);
+    };
+    const onStateChange = () => {
+      if (peerConnection.iceGatheringState !== 'complete') return;
+      cleanup();
+      resolve();
+    };
+    const timer = window.setTimeout(() => {
+      cleanup();
+      if (/^a=candidate:/m.test(peerConnection.localDescription?.sdp || '')) resolve();
+      else reject(new Error('No network candidates were gathered for the Player mirror connection.'));
+    }, 5000);
+    peerConnection.addEventListener('icegatheringstatechange', onStateChange);
+    onStateChange();
+  });
+}
+
+function stopMirrorConnection() {
+  mirrorNegotiationId++;
+  const peerConnection = mirrorPeerConnection;
+  mirrorPeerConnection = null;
+  peerConnection?.close();
+  const stream = mirrorStream;
+  mirrorStream = null;
+  stream?.getTracks().forEach(track => track.stop());
+  if (video.srcObject) {
+    video.pause();
+    video.srcObject = null;
+  }
+  video.muted = false;
+  stage.classList.remove('mirror-mode');
+}
+
+async function handleMirrorOffer(sdp, senderId) {
+  if (typeof sdp !== 'string' || !sdp.length || sdp.length > 48 * 1024) {
+    sendStatus(senderId, 'error', 'Invalid Player mirror offer.');
+    return;
+  }
+
+  stopMirrorConnection();
+  const negotiationId = mirrorNegotiationId;
+  let peerConnection;
+  try {
+    peerConnection = new RTCPeerConnection();
+  } catch (error) {
+    sendStatus(senderId, 'error', `Unable to create a Player mirror connection: ${error.message || String(error)}`);
+    return;
+  }
+  mirrorPeerConnection = peerConnection;
+  stage.classList.add('mirror-mode');
+  setMessage('');
+  cover.hidden = true;
+  lyrics.hidden = true;
+  video.muted = false;
+  video.autoplay = true;
+  video.playsInline = true;
+
+  peerConnection.ontrack = event => {
+    if (negotiationId !== mirrorNegotiationId || mirrorPeerConnection !== peerConnection) return;
+    let stream = event.streams[0] || mirrorStream;
+    if (!stream) {
+      stream = new MediaStream();
+    }
+    if (mirrorStream !== stream) {
+      mirrorStream = stream;
+      video.srcObject = stream;
+    } else if (!stream.getTracks().includes(event.track)) {
+      stream.addTrack(event.track);
+    }
+    void video.play().catch(error => {
+      if (negotiationId !== mirrorNegotiationId) return;
+      const message = `Unable to play the Player mirror stream: ${error.message || String(error)}`;
+      console.error(message, error);
+      sendStatus(senderId, 'error', message);
+    });
+  };
+  peerConnection.onconnectionstatechange = () => {
+    if (negotiationId !== mirrorNegotiationId || mirrorPeerConnection !== peerConnection) return;
+    if (peerConnection.connectionState === 'failed') {
+      sendStatus(senderId, 'error', 'The Player mirror connection failed.');
+    }
+  };
+
+  try {
+    await peerConnection.setRemoteDescription({ type: 'offer', sdp });
+    if (negotiationId !== mirrorNegotiationId) return;
+    const answer = await peerConnection.createAnswer();
+    await peerConnection.setLocalDescription(answer);
+    await waitForIceGatheringComplete(peerConnection);
+    if (negotiationId !== mirrorNegotiationId) return;
+    const answerSdp = peerConnection.localDescription?.sdp;
+    if (!answerSdp) throw new Error('Chromecast did not create a Player mirror answer.');
+    context.sendCustomMessage(NAMESPACE, senderId, { type: 'MIRROR_ANSWER', sdp: answerSdp });
+  } catch (error) {
+    if (negotiationId !== mirrorNegotiationId) return;
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('Unable to negotiate Player mirroring', error);
+    sendStatus(senderId, 'error', errorMessage);
+    stopMirrorConnection();
+  }
 }
 
 function ensureAudioGraph(element) {
@@ -188,78 +306,160 @@ async function loadJsonAsset(url, label) {
   return value;
 }
 
-function renderLyrics(currentTime) {
+function renderLyrics() {
   if (!media) return;
+  const currentTime = getSubtitleTime(media.isVideo, video.currentTime, activeElement?.currentTime);
   const karaokeLine = Array.isArray(media.karaokeLines)
     ? media.karaokeLines.find(line => line.start <= currentTime && currentTime <= line.end)
     : null;
   if (karaokeLine) {
-    lyrics.replaceChildren();
-    for (const character of karaokeLine.characters) {
-      const span = document.createElement('span');
-      span.className = 'word';
-      span.textContent = character.text;
-      if (currentTime >= character.end) span.classList.add('complete');
-      else if (currentTime > character.start && character.end > character.start) {
-        span.style.setProperty('--fill', String(Math.min(1, (currentTime - character.start) / (character.end - character.start))));
+    const characters = karaokeLine.characters;
+    const lineChanged = renderedKaraokeLine !== karaokeLine;
+    if (lineChanged) {
+      lyrics.replaceChildren();
+      for (const character of characters) {
+        const span = document.createElement('span');
+        span.className = 'karaoke-character';
+        span.textContent = character.text;
+        lyrics.append(span);
+      }
+      renderedKaraokeLine = karaokeLine;
+      renderedTimedLine = null;
+      activeCharacterIndex = -1;
+    }
+    const rewound = currentTime < lastKaraokeTime;
+    if (rewound) activeCharacterIndex = -1;
+    const nextCharacterIndex = characters.findIndex(character => currentTime < character.end);
+    const firstChangedIndex = lineChanged || rewound || activeCharacterIndex < 0
+      ? 0
+      : Math.min(activeCharacterIndex, nextCharacterIndex < 0 ? characters.length - 1 : nextCharacterIndex);
+    const lastChangedIndex = lineChanged || rewound || activeCharacterIndex < 0
+      ? characters.length - 1
+      : Math.max(activeCharacterIndex, nextCharacterIndex);
+    for (let index = firstChangedIndex; index <= lastChangedIndex; index++) {
+      const character = characters[index];
+      const span = lyrics.children[index];
+      span.classList.remove('active', 'complete');
+      span.style.removeProperty('--fill');
+      const state = getKaraokeCharacterState(currentTime, character);
+      if (state.complete) span.classList.add('complete');
+      else if (state.active) {
+        span.style.setProperty('--fill', String(state.fill));
         span.classList.add('active');
       }
-      lyrics.append(span);
     }
+    activeCharacterIndex = nextCharacterIndex;
+    lastKaraokeTime = currentTime;
     lyrics.hidden = false;
     return;
   }
   const timedLine = Array.isArray(media.lyrics)
     ? [...media.lyrics].reverse().find(line => line.time <= currentTime)
     : null;
-  lyrics.textContent = timedLine?.text || '';
+  if (renderedKaraokeLine) lyrics.replaceChildren();
+  renderedKaraokeLine = null;
+  activeCharacterIndex = -1;
+  lastKaraokeTime = currentTime;
+  if (renderedTimedLine !== timedLine) lyrics.textContent = timedLine?.text || '';
+  renderedTimedLine = timedLine;
   lyrics.hidden = !timedLine;
 }
 
-function selectAudioSource(source) {
-  if (!media) return;
-  const position = media.isVideo ? video.currentTime : activeElement?.currentTime || 0;
-  activeSource = source;
-  if (media.isVideo) {
-    if (source === 'original' || (!media.accompanimentUrl && source === 'accompaniment')) {
+async function selectAudioSource(source, position, changeId) {
+  if (!media) return false;
+  const mediaForChange = media;
+  const currentTime = Number.isFinite(position) ? Math.max(0, position) : 0;
+  if (mediaForChange.isVideo && source === 'original') {
+    audio.pause();
+    video.muted = false;
+    activeElement = video;
+    activeSource = source;
+  } else {
+    const sourceUrl = source === 'original'
+      ? mediaForChange.url
+      : source === 'vocals'
+        ? mediaForChange.vocalsUrl || (!mediaForChange.isVideo && activeSource === source ? mediaForChange.url : undefined)
+        : mediaForChange.accompanimentUrl || (!mediaForChange.isVideo && activeSource === source ? mediaForChange.url : undefined);
+    if (!sourceUrl) throw new Error(`The ${source} track is unavailable.`);
+    audio.crossOrigin = 'anonymous';
+    const resolvedSourceUrl = new URL(sourceUrl, document.baseURI).href;
+    if (audio.src !== resolvedSourceUrl) {
+      audio.src = resolvedSourceUrl;
+      audio.load();
+    }
+    await waitForMediaMetadata(audio);
+    if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
+    audio.currentTime = currentTime;
+    if (mediaForChange.isVideo) video.muted = true;
+    activeElement = audio;
+    activeSource = source;
+  }
+  ensureAudioGraph(activeElement);
+  configureEffects(mediaForChange.pan || 0, mediaForChange.transpose || 0);
+  return true;
+}
+
+function updateLyricsFrame() {
+  lyricsAnimationFrame = 0;
+  renderLyrics();
+  if (activeElement && !activeElement.paused && media?.karaokeLines?.length) {
+    lyricsAnimationFrame = window.requestAnimationFrame(updateLyricsFrame);
+  }
+}
+
+function startLyricsAnimation() {
+  if (!lyricsAnimationFrame) {
+    lyricsAnimationFrame = window.requestAnimationFrame(updateLyricsFrame);
+  }
+}
+
+function stopLyricsAnimation() {
+  if (lyricsAnimationFrame) window.cancelAnimationFrame(lyricsAnimationFrame);
+  lyricsAnimationFrame = 0;
+  renderLyrics();
+}
+
+async function changeAudioSource(source, senderId) {
+  const changeId = ++audioSourceChangeId;
+  const position = getSubtitleTime(media?.isVideo, video.currentTime, activeElement?.currentTime);
+  const wasPlaying = !!activeElement && !activeElement.paused;
+  try {
+    const changed = await selectAudioSource(source, position, changeId);
+    if (!changed || changeId !== audioSourceChangeId) return;
+    if (audioContext?.state === 'suspended') await audioContext.resume();
+    if (wasPlaying && activeElement) await activeElement.play();
+  } catch (error) {
+    if (media?.isVideo && video.muted) {
       audio.pause();
       video.muted = false;
       activeElement = video;
-    } else {
-      const sourceUrl = source === 'vocals' ? media.vocalsUrl : media.accompanimentUrl;
-      if (!sourceUrl) throw new Error(`The ${source} track is unavailable.`);
-      video.muted = true;
-      audio.crossOrigin = 'anonymous';
-      audio.src = sourceUrl;
-      audio.currentTime = position;
-      activeElement = audio;
+      activeSource = 'original';
+      ensureAudioGraph(video);
+      configureEffects(media.pan || 0, media.transpose || 0);
     }
-  } else if (source === 'vocals' && media.vocalsUrl) {
-    audio.crossOrigin = 'anonymous';
-    audio.src = media.vocalsUrl;
-    audio.currentTime = position;
-    activeElement = audio;
-  } else if (source === 'accompaniment' && media.accompanimentUrl) {
-    audio.crossOrigin = 'anonymous';
-    audio.src = media.accompanimentUrl;
-    audio.currentTime = position;
-    activeElement = audio;
-  } else {
-    activeElement = audio;
+    throw error;
   }
-  ensureAudioGraph(activeElement);
-  configureEffects(media.pan || 0, media.transpose || 0);
+  if (activeElement) {
+    sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
+  }
 }
 
 async function loadMedia(nextMedia) {
+  stopMirrorConnection();
   if (!isValidMediaPayload(nextMedia)) {
     throw new Error('Invalid media description.');
   }
+  const loadId = ++audioSourceChangeId;
   const [timedLyrics, karaokeLines] = await Promise.all([
     loadJsonAsset(nextMedia.lyricsUrl, 'lyrics'),
     loadJsonAsset(nextMedia.karaokeUrl, 'karaoke lyrics')
   ]);
+  if (loadId !== audioSourceChangeId) return;
   media = { ...nextMedia, lyrics: timedLyrics, karaokeLines };
+  renderedKaraokeLine = null;
+  renderedTimedLine = null;
+  activeCharacterIndex = -1;
+  lastKaraokeTime = 0;
   activeSource = nextMedia.audioSource || 'original';
   activeElement = null;
   video.pause();
@@ -287,7 +487,10 @@ async function loadMedia(nextMedia) {
   }
   ensureAudioGraph(activeElement);
   configureEffects(nextMedia.pan || 0, nextMedia.transpose || 0);
-  if (activeSource !== 'original') selectAudioSource(activeSource);
+  if (activeSource !== 'original') {
+    await selectAudioSource(activeSource, nextMedia.currentTime, loadId);
+    if (loadId !== audioSourceChangeId) return;
+  }
   if (nextMedia.autoplay) {
     await audioContext.resume();
     await activeElement.play();
@@ -309,6 +512,12 @@ function handleCommand(event) {
             setMessage(`Playback error: ${error.message}`);
             sendStatus(event.senderId, 'error', error.message);
           });
+        return;
+      case 'MIRROR_OFFER':
+        void handleMirrorOffer(command.sdp, event.senderId);
+        return;
+      case 'MIRROR_STOP':
+        stopMirrorConnection();
         return;
       case 'PLAY':
         void audioContext?.resume();
@@ -334,15 +543,16 @@ function handleCommand(event) {
         return;
       case 'AUDIO_SOURCE':
         if (['original', 'accompaniment', 'vocals'].includes(command.source)) {
-          const currentTime = activeElement?.currentTime || 0;
-          const wasPlaying = !!activeElement && !activeElement.paused;
-          selectAudioSource(command.source);
-          activeElement.currentTime = currentTime;
-          if (wasPlaying) void activeElement.play();
+          void changeAudioSource(command.source, event.senderId).catch(error => {
+            const message = error instanceof Error ? error.message : String(error);
+            console.error('Unable to switch Chromecast audio source', error);
+            sendStatus(event.senderId, 'error', message);
+          });
           return;
         }
         return;
       case 'STOP':
+        stopMirrorConnection();
         video.pause();
         audio.pause();
         video.removeAttribute('src');
@@ -365,16 +575,23 @@ context.start();
 
 for (const element of [video, audio]) {
   element.addEventListener('timeupdate', () => {
-    renderLyrics(element.currentTime);
+    renderLyrics();
     if (element === video && media?.isVideo && activeElement === audio &&
         !audio.paused && Math.abs(audio.currentTime - video.currentTime) > 0.18) {
       audio.currentTime = video.currentTime;
     }
   });
-  element.addEventListener('play', () => sendStatus(undefined, 'playing'));
-  element.addEventListener('pause', () => {
-    if (element === activeElement) sendStatus(undefined, 'paused');
+  element.addEventListener('play', () => {
+    if (element === activeElement) startLyricsAnimation();
+    sendStatus(undefined, 'playing');
   });
+  element.addEventListener('pause', () => {
+    if (element === activeElement) {
+      stopLyricsAnimation();
+      sendStatus(undefined, 'paused');
+    }
+  });
+  element.addEventListener('seeked', renderLyrics);
   element.addEventListener('ended', () => sendStatus(undefined, 'ended'));
   element.addEventListener('error', () => {
     if (element !== activeElement) return;
@@ -394,6 +611,7 @@ statusTimer = window.setInterval(() => {
 context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, () => {
   if (context.getSenders().length === 0) {
     window.clearInterval(statusTimer);
+    stopMirrorConnection();
     video.pause();
     audio.pause();
   }

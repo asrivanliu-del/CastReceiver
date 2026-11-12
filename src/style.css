@@ -34,6 +34,16 @@ body,
   background: #08090d;
 }
 
+#stage.mirror-mode #video {
+  z-index: 1;
+}
+
+#stage.mirror-mode #cover,
+#stage.mirror-mode #message,
+#stage.mirror-mode #lyrics {
+  display: none;
+}
+
 #audio {
   display: none;
 }
@@ -62,29 +72,38 @@ body,
 #lyrics {
   position: absolute;
   z-index: 3;
-  left: 5vw;
-  right: 5vw;
+  left: 50%;
   bottom: 8vh;
-  min-height: 1.5em;
+  width: max-content;
+  max-width: 90vw;
+  max-height: 30vh;
+  overflow: hidden;
+  padding: 0.08em 0.35em;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 0.2em;
+  background: rgba(0, 0, 0, 0.72);
   text-align: center;
-  font-size: clamp(1.8rem, 5vw, 4.5rem);
+  font-size: clamp(1.35rem, 4vw, 3rem);
   font-weight: 700;
-  line-height: 1.35;
-  text-shadow: 0 2px 10px #000, 0 5px 25px #000;
+  line-height: 1.45;
+  letter-spacing: 0.04em;
+  text-shadow: 0 2px 10px #000;
+  transform: translateX(-50%);
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
-.word {
+.karaoke-character {
   color: #fff;
 }
 
-.word.active,
-.word.complete {
-  color: #ffc96a;
+.karaoke-character.complete {
+  color: #a4e8d1;
 }
 
-.word.active {
-  background: linear-gradient(90deg, #ffc96a calc(var(--fill) * 100%), #fff calc(var(--fill) * 100%));
+.karaoke-character.active {
+  background-image: linear-gradient(90deg, #a4e8d1 calc(var(--fill) * 100%), #fff calc(var(--fill) * 100%));
   background-clip: text;
+  -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }

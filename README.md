@@ -1,6 +1,6 @@
 # MintPlayer Cast Receiver
 
-Static Google Cast Custom Web Receiver for MintPlayer. This repository contains only public receiver code; local user media is streamed directly from MintPlayer over the user's LAN.
+Static Google Cast Custom Web Receiver for MintPlayer. This repository contains only public receiver code; it receives either a WebRTC mirror of the MintPlayer Player area or direct media served by MintPlayer over the user's LAN.
 
 The receiver bundles SoundTouchJS for pitch shifting. Its LGPL-2.1 license is included in the deployed site as `SOUNDTOUCH-LICENSE.txt`.
 
@@ -22,4 +22,4 @@ The Pages URL is normally `https://<owner>.github.io/<repository>/`. Register th
 
 ## Network and media
 
-The Receiver page is downloaded from GitHub Pages over HTTPS. Audio, video, cover, and lyric assets are not uploaded to Pages: the desktop app serves only explicitly authorized session files over a temporary, token-protected LAN HTTP endpoint. The Chromecast and PC must be able to reach one another on the same network.
+The Receiver page is downloaded from GitHub Pages over HTTPS. In the default mirror mode, MintPlayer captures the Player area and audio locally and sends the stream directly to the Receiver over WebRTC using LAN ICE candidates without an external STUN dependency. Direct media mode does not upload assets to Pages: the desktop app serves only explicitly authorized session files over a temporary, token-protected LAN HTTP endpoint. The Chromecast and PC must be able to reach one another on the same network.
