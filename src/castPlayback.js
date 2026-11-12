@@ -6,10 +6,10 @@ export function getSubtitleTime(isVideo, videoTime, activeTime) {
 export function getKaraokeCharacterState(currentTime, character) {
   const complete = currentTime >= character.end;
   const active = !complete && currentTime > character.start && character.end > character.start;
-  const fill = active
-    ? Math.min(1, (currentTime - character.start) / (character.end - character.start))
+  const fillPercent = active
+    ? Math.min(100, ((currentTime - character.start) / (character.end - character.start)) * 100)
     : 0;
-  return { active, complete, fill };
+  return { active, complete, fillPercent };
 }
 
 export function waitForMediaMetadata(element, timeoutMs = 15000) {

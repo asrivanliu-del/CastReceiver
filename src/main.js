@@ -344,7 +344,7 @@ function renderLyrics() {
       const state = getKaraokeCharacterState(currentTime, character);
       if (state.complete) span.classList.add('complete');
       else if (state.active) {
-        span.style.setProperty('--fill', String(state.fill));
+        span.style.setProperty('--fill', `${state.fillPercent}%`);
         span.classList.add('active');
       }
     }

@@ -71,26 +71,25 @@ body,
 
 #lyrics {
   position: absolute;
-  z-index: 3;
+  z-index: 5;
   left: 50%;
-  bottom: 8vh;
+  bottom: 9%;
   width: max-content;
-  max-width: 90vw;
-  max-height: 30vh;
-  overflow: hidden;
-  padding: 0.08em 0.35em;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 0.2em;
+  max-width: calc(100% - 48px);
+  padding: 1px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 8px;
   background: rgba(0, 0, 0, 0.72);
   text-align: center;
-  font-size: clamp(1.35rem, 4vw, 3rem);
+  font-size: clamp(22px, 3.2vw, 48px);
+  font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-weight: 700;
   line-height: 1.45;
   letter-spacing: 0.04em;
-  text-shadow: 0 2px 10px #000;
+  -webkit-font-smoothing: antialiased;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
   transform: translateX(-50%);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .karaoke-character {
@@ -102,8 +101,9 @@ body,
 }
 
 .karaoke-character.active {
-  background-image: linear-gradient(90deg, #a4e8d1 calc(var(--fill) * 100%), #fff calc(var(--fill) * 100%));
+  background-image: linear-gradient(90deg, #a4e8d1 0%, #a4e8d1 var(--fill), #fff var(--fill), #fff 100%);
   background-clip: text;
   -webkit-background-clip: text;
+  color: transparent;
   -webkit-text-fill-color: transparent;
 }
