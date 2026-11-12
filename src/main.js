@@ -175,8 +175,17 @@ function isValidMediaPayload(value) {
       !Number.isInteger(value.transpose) ||
       value.transpose < -12 ||
       value.transpose > 12) return false;
-  return ['accompanimentUrl', 'vocalsUrl', 'coverUrl'].every(key =>
+  return ['accompanimentUrl', 'vocalsUrl', 'coverUrl', 'lyricsUrl', 'karaokeUrl'].every(key =>
     value[key] === undefined || isSessionAssetUrl(value[key], value.url));
+}
+
+async function loadJsonAsset(url, label) {
+  if (!url) return [];
+  const response = await fetch(url, { cache: 'no-store' });
+  if (!response.ok) throw new Error(`Unable to load ${label} (${response.status}).`);
+  const value = await response.json();
+  if (!Array.isArray(value)) throw new Error(`Invalid ${label} data.`);
+  return value;
 }
 
 function renderLyrics(currentTime) {
@@ -246,8 +255,13 @@ async function loadMedia(nextMedia) {
   if (!isValidMediaPayload(nextMedia)) {
     throw new Error('Invalid media description.');
   }
-  media = nextMedia;
+  const [timedLyrics, karaokeLines] = await Promise.all([
+    loadJsonAsset(nextMedia.lyricsUrl, 'lyrics'),
+    loadJsonAsset(nextMedia.karaokeUrl, 'karaoke lyrics')
+  ]);
+  media = { ...nextMedia, lyrics: timedLyrics, karaokeLines };
   activeSource = nextMedia.audioSource || 'original';
+  activeElement = null;
   video.pause();
   audio.pause();
   video.removeAttribute('src');
@@ -362,6 +376,15 @@ for (const element of [video, audio]) {
     if (element === activeElement) sendStatus(undefined, 'paused');
   });
   element.addEventListener('ended', () => sendStatus(undefined, 'ended'));
+  element.addEventListener('error', () => {
+    if (element !== activeElement) return;
+    const mediaError = element.error;
+    const mediaType = element === video ? 'video' : 'audio';
+    const error = `Unable to load ${mediaType} for "${media?.title || 'media'}" (media error ${mediaError?.code || 'unknown'}).`;
+    console.error(error, mediaError);
+    setMessage(`Playback error: ${error}`);
+    sendStatus(undefined, 'error', error);
+  });
 }
 
 statusTimer = window.setInterval(() => {
