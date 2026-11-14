@@ -1,5 +1,13 @@
 import { SoundTouch } from 'soundtouchjs';
-import { getKaraokeCharacterState, getSubtitleTime, waitForMediaMetadata } from './castPlayback.js';
+import {
+  getKaraokeCharacterState,
+  getAudioSourceRoute,
+  getSubtitleTime,
+  setMediaElementAudioMuted,
+  waitForFirstVideoFrame,
+  waitForMediaBuffer,
+  waitForMediaMetadata
+} from './castPlayback.js';
 import './style.css';
 
 const NAMESPACE = 'urn:x-cast:com.mintplayer.cast';
@@ -15,6 +23,7 @@ const elements = new Map();
 let media = null;
 let activeElement = null;
 let activeSource = 'original';
+let mediaLoadController = null;
 let audioContext = null;
 let gainNode = null;
 let pannerNode = null;
@@ -34,6 +43,7 @@ let lastKaraokeTime = 0;
 let mirrorPeerConnection = null;
 let mirrorStream = null;
 let mirrorNegotiationId = 0;
+let mirrorReadySent = false;
 
 function sendStatus(senderId, state, error) {
   const data = {
@@ -53,6 +63,10 @@ function sendStatus(senderId, state, error) {
 function setMessage(text) {
   message.textContent = text;
   message.hidden = !text;
+}
+
+function setVideoAudioMuted(muted) {
+  setMediaElementAudioMuted(video, muted, elements.get(video)?.gain, audioContext?.currentTime || 0);
 }
 
 function waitForIceGatheringComplete(peerConnection) {
@@ -84,12 +98,13 @@ function stopMirrorConnection() {
   peerConnection?.close();
   const stream = mirrorStream;
   mirrorStream = null;
+  mirrorReadySent = false;
   stream?.getTracks().forEach(track => track.stop());
   if (video.srcObject) {
     video.pause();
     video.srcObject = null;
   }
-  video.muted = false;
+  setVideoAudioMuted(false);
   stage.classList.remove('mirror-mode');
 }
 
@@ -109,11 +124,12 @@ async function handleMirrorOffer(sdp, senderId) {
     return;
   }
   mirrorPeerConnection = peerConnection;
+  mirrorReadySent = false;
   stage.classList.add('mirror-mode');
   setMessage('');
   cover.hidden = true;
   lyrics.hidden = true;
-  video.muted = false;
+  setVideoAudioMuted(false);
   video.autoplay = true;
   video.playsInline = true;
 
@@ -129,7 +145,13 @@ async function handleMirrorOffer(sdp, senderId) {
     } else if (!stream.getTracks().includes(event.track)) {
       stream.addTrack(event.track);
     }
-    void video.play().catch(error => {
+    void video.play().then(async () => {
+      if (!stream.getVideoTracks().length || mirrorReadySent) return;
+      await waitForFirstVideoFrame(video);
+      if (negotiationId !== mirrorNegotiationId || mirrorPeerConnection !== peerConnection || mirrorReadySent) return;
+      mirrorReadySent = true;
+      sendStatus(senderId, 'mirror-ready');
+    }).catch(error => {
       if (negotiationId !== mirrorNegotiationId) return;
       const message = `Unable to play the Player mirror stream: ${error.message || String(error)}`;
       console.error(message, error);
@@ -369,31 +391,23 @@ async function selectAudioSource(source, position, changeId) {
   if (!media) return false;
   const mediaForChange = media;
   const currentTime = Number.isFinite(position) ? Math.max(0, position) : 0;
-  if (mediaForChange.isVideo && source === 'original') {
-    audio.pause();
-    video.muted = false;
-    activeElement = video;
-    activeSource = source;
-  } else {
-    const sourceUrl = source === 'original'
-      ? mediaForChange.url
-      : source === 'vocals'
-        ? mediaForChange.vocalsUrl || (!mediaForChange.isVideo && activeSource === source ? mediaForChange.url : undefined)
-        : mediaForChange.accompanimentUrl || (!mediaForChange.isVideo && activeSource === source ? mediaForChange.url : undefined);
-    if (!sourceUrl) throw new Error(`The ${source} track is unavailable.`);
-    audio.crossOrigin = 'anonymous';
-    const resolvedSourceUrl = new URL(sourceUrl, document.baseURI).href;
-    if (audio.src !== resolvedSourceUrl) {
-      audio.src = resolvedSourceUrl;
-      audio.load();
-    }
-    await waitForMediaMetadata(audio);
-    if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
-    audio.currentTime = currentTime;
-    if (mediaForChange.isVideo) video.muted = true;
-    activeElement = audio;
-    activeSource = source;
+  const route = getAudioSourceRoute(mediaForChange, source, activeSource);
+  if (!route.url) throw new Error(`The ${source} track is unavailable.`);
+  if (mediaForChange.isVideo) {
+    ensureAudioGraph(video);
+    setVideoAudioMuted(route.muteVideo);
   }
+  audio.crossOrigin = 'anonymous';
+  const resolvedSourceUrl = new URL(route.url, document.baseURI).href;
+  if (audio.src !== resolvedSourceUrl) {
+    audio.src = resolvedSourceUrl;
+    audio.load();
+  }
+  await waitForMediaMetadata(audio);
+  if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
+  audio.currentTime = currentTime;
+  activeElement = audio;
+  activeSource = source;
   ensureAudioGraph(activeElement);
   configureEffects(mediaForChange.pan || 0, mediaForChange.transpose || 0);
   return true;
@@ -422,34 +436,26 @@ function stopLyricsAnimation() {
 async function changeAudioSource(source, senderId) {
   const changeId = ++audioSourceChangeId;
   const position = getSubtitleTime(media?.isVideo, video.currentTime, activeElement?.currentTime);
-  const wasPlaying = !!activeElement && !activeElement.paused;
-  try {
-    const changed = await selectAudioSource(source, position, changeId);
-    if (!changed || changeId !== audioSourceChangeId) return;
-    if (audioContext?.state === 'suspended') await audioContext.resume();
-    if (wasPlaying && activeElement) await activeElement.play();
-  } catch (error) {
-    if (media?.isVideo && video.muted) {
-      audio.pause();
-      video.muted = false;
-      activeElement = video;
-      activeSource = 'original';
-      ensureAudioGraph(video);
-      configureEffects(media.pan || 0, media.transpose || 0);
-    }
-    throw error;
-  }
+  const wasPlaying = media?.isVideo ? !video.paused : !!activeElement && !activeElement.paused;
+  const changed = await selectAudioSource(source, position, changeId);
+  if (!changed || changeId !== audioSourceChangeId) return;
+  if (audioContext?.state === 'suspended') await audioContext.resume();
+  if (wasPlaying && activeElement) await activeElement.play();
   if (activeElement) {
     sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
   }
 }
 
-async function loadMedia(nextMedia) {
+async function loadMedia(nextMedia, senderId) {
   stopMirrorConnection();
   if (!isValidMediaPayload(nextMedia)) {
     throw new Error('Invalid media description.');
   }
+  mediaLoadController?.abort();
+  const loadController = new AbortController();
+  mediaLoadController = loadController;
   const loadId = ++audioSourceChangeId;
+  sendStatus(senderId, 'buffering');
   const [timedLyrics, karaokeLines] = await Promise.all([
     loadJsonAsset(nextMedia.lyricsUrl, 'lyrics'),
     loadJsonAsset(nextMedia.karaokeUrl, 'karaoke lyrics')
@@ -468,7 +474,7 @@ async function loadMedia(nextMedia) {
   audio.removeAttribute('src');
   video.load();
   audio.load();
-  video.muted = false;
+  setVideoAudioMuted(nextMedia.isVideo);
   setMessage('');
   cover.src = nextMedia.coverUrl || '';
   cover.hidden = !nextMedia.coverUrl;
@@ -476,27 +482,43 @@ async function loadMedia(nextMedia) {
 
   if (nextMedia.isVideo) {
     video.crossOrigin = 'anonymous';
+    video.preload = 'auto';
     video.src = nextMedia.url;
+    await waitForMediaMetadata(video);
+    if (loadId !== audioSourceChangeId) return;
     video.currentTime = nextMedia.currentTime || 0;
     activeElement = video;
   } else {
     audio.crossOrigin = 'anonymous';
+    audio.preload = 'auto';
     audio.src = nextMedia.url;
+    await waitForMediaMetadata(audio);
+    if (loadId !== audioSourceChangeId) return;
     audio.currentTime = nextMedia.currentTime || 0;
     activeElement = audio;
   }
   ensureAudioGraph(activeElement);
   configureEffects(nextMedia.pan || 0, nextMedia.transpose || 0);
-  if (activeSource !== 'original') {
+  if (nextMedia.isVideo || activeSource !== 'original') {
     await selectAudioSource(activeSource, nextMedia.currentTime, loadId);
     if (loadId !== audioSourceChangeId) return;
   }
+  const bufferTargets = new Set([activeElement]);
+  if (nextMedia.isVideo && activeElement !== video) bufferTargets.add(video);
+  try {
+    await Promise.all([...bufferTargets].map(element =>
+      waitForMediaBuffer(element, nextMedia.currentTime || 0, 3, 20000, loadController.signal)));
+  } catch (error) {
+    if (loadId !== audioSourceChangeId) return;
+    throw error;
+  }
+  if (loadId !== audioSourceChangeId) return;
   if (nextMedia.autoplay) {
     await audioContext.resume();
     await activeElement.play();
     if (activeElement !== video && nextMedia.isVideo) await video.play();
   }
-  sendStatus(undefined, 'playing');
+  sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
 }
 
 function handleCommand(event) {
@@ -507,7 +529,7 @@ function handleCommand(event) {
         sendStatus(event.senderId, 'ready');
         return;
       case 'LOAD':
-        void loadMedia(command.media).then(() => sendStatus(event.senderId, activeElement?.paused ? 'paused' : 'playing'))
+        void loadMedia(command.media, event.senderId)
           .catch(error => {
             setMessage(`Playback error: ${error.message}`);
             sendStatus(event.senderId, 'error', error.message);
@@ -552,11 +574,15 @@ function handleCommand(event) {
         }
         return;
       case 'STOP':
+        audioSourceChangeId++;
+        mediaLoadController?.abort();
+        mediaLoadController = null;
         stopMirrorConnection();
         video.pause();
         audio.pause();
         video.removeAttribute('src');
         audio.removeAttribute('src');
+        setVideoAudioMuted(false);
         media = null;
         activeElement = null;
         setMessage('Waiting for MintPlayer…');
