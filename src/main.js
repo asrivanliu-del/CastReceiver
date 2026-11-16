@@ -408,6 +408,7 @@ async function selectAudioSource(source, position, changeId) {
   }
   if (mediaForChange.isVideo) {
     ensureAudioGraph(video);
+    setVideoAudioMuted(route.muteVideo);
   }
   audio.crossOrigin = 'anonymous';
   const resolvedSourceUrl = new URL(route.url, document.baseURI).href;
@@ -419,10 +420,6 @@ async function selectAudioSource(source, position, changeId) {
   if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
   const sourceTime = getSubtitleTime(mediaForChange.isVideo, video.currentTime, currentTime);
   audio.currentTime = sourceTime;
-  if (mediaForChange.isVideo) {
-    await waitForMediaBuffer(audio, sourceTime, 2, 20000);
-    if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
-  }
   activeElement = audio;
   activeSource = source;
   ensureAudioGraph(activeElement);
@@ -464,9 +461,6 @@ async function changeAudioSource(source, senderId) {
   if (wasPlaying && intentId === playbackIntentId && activeElement) {
     await activeElement.play();
     if (mediaForChange?.isVideo && video.paused) await video.play();
-  }
-  if (mediaForChange?.isVideo && activeSource !== 'original') {
-    setVideoAudioMuted(true);
   }
   const playbackClock = getPlaybackClockElement(media?.isVideo, video, activeElement);
   if (playbackClock) {
@@ -539,7 +533,7 @@ async function loadMedia(nextMedia, senderId) {
       waitForMediaBuffer(
         element,
         nextMedia.currentTime || 0,
-        getStartupBufferSeconds(nextMedia.isVideo),
+        getStartupBufferSeconds(element === video),
         20000,
         loadController.signal
       )));
@@ -550,9 +544,8 @@ async function loadMedia(nextMedia, senderId) {
   if (loadId !== audioSourceChangeId) return;
   if (nextMedia.autoplay) {
     await audioContext.resume();
-    const playPromises = [activeElement.play()];
-    if (activeElement !== video && nextMedia.isVideo) playPromises.push(video.play());
-    await Promise.all(playPromises);
+    await activeElement.play();
+    if (activeElement !== video && nextMedia.isVideo) await video.play();
   }
   sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
 }
