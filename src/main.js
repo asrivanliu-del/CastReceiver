@@ -1,6 +1,7 @@
 import { SoundTouch } from 'soundtouchjs';
 import {
   getKaraokeCharacterState,
+  getKaraokeLinePair,
   getAudioSourceRoute,
   getPlaybackClockElement,
   getStemAudioMuteState,
@@ -37,6 +38,9 @@ let statusTimer = 0;
 let audioSourceChangeId = 0;
 let lyricsAnimationFrame = 0;
 let renderedKaraokeLine = null;
+let renderedKaraokeNextLine = null;
+let renderedKaraokeLineIsTop = null;
+let activeKaraokeRow = null;
 let renderedTimedLine = null;
 let activeCharacterIndex = -1;
 let lastKaraokeTime = 0;
@@ -360,21 +364,47 @@ async function loadJsonAsset(url, label) {
 function renderLyrics() {
   if (!media) return;
   const currentTime = getSubtitleTime(media.isVideo, video.currentTime, activeElement?.currentTime);
-  const karaokeLine = Array.isArray(media.karaokeLines)
-    ? media.karaokeLines.find(line => line.start <= currentTime && currentTime <= line.end)
-    : null;
-  if (karaokeLine) {
-    const characters = karaokeLine.characters;
-    const lineChanged = renderedKaraokeLine !== karaokeLine;
-    if (lineChanged) {
+  const karaokePair = getKaraokeLinePair(media.karaokeLines, currentTime);
+  if (karaokePair) {
+    const { currentLine, nextLine, currentLineIsTop } = karaokePair;
+    const characters = currentLine.characters;
+    const lineChanged = renderedKaraokeLine !== currentLine;
+    const pairChanged = lineChanged ||
+      renderedKaraokeNextLine !== nextLine ||
+      renderedKaraokeLineIsTop !== currentLineIsTop;
+    if (pairChanged) {
       lyrics.replaceChildren();
-      for (const character of characters) {
-        const span = document.createElement('span');
-        span.className = 'karaoke-character';
-        span.textContent = character.text;
-        lyrics.append(span);
+      const createRow = (line, isCurrent, alignment) => {
+        const row = document.createElement('div');
+        row.className = `karaoke-subtitle-line karaoke-subtitle-${alignment} ${isCurrent ? 'karaoke-current-line' : 'karaoke-next-line'}`;
+        if (isCurrent) {
+          for (const character of line.characters) {
+            const span = document.createElement('span');
+            span.className = 'karaoke-character';
+            span.textContent = character.text;
+            row.append(span);
+          }
+        } else {
+          row.textContent = line.text;
+        }
+        return row;
+      };
+      const topLine = currentLineIsTop ? currentLine : nextLine;
+      const bottomLine = currentLineIsTop ? nextLine : currentLine;
+      activeKaraokeRow = null;
+      if (topLine) {
+        const topRow = createRow(topLine, currentLineIsTop, 'top-line');
+        lyrics.append(topRow);
+        if (currentLineIsTop) activeKaraokeRow = topRow;
       }
-      renderedKaraokeLine = karaokeLine;
+      if (bottomLine) {
+        const bottomRow = createRow(bottomLine, !currentLineIsTop, 'bottom-line');
+        lyrics.append(bottomRow);
+        if (!currentLineIsTop) activeKaraokeRow = bottomRow;
+      }
+      renderedKaraokeLine = currentLine;
+      renderedKaraokeNextLine = nextLine;
+      renderedKaraokeLineIsTop = currentLineIsTop;
       renderedTimedLine = null;
       activeCharacterIndex = -1;
     }
@@ -389,7 +419,7 @@ function renderLyrics() {
       : Math.max(activeCharacterIndex, nextCharacterIndex);
     for (let index = firstChangedIndex; index <= lastChangedIndex; index++) {
       const character = characters[index];
-      const span = lyrics.children[index];
+      const span = activeKaraokeRow.children[index];
       span.classList.remove('active', 'complete');
       span.style.removeProperty('--fill');
       const state = getKaraokeCharacterState(currentTime, character);
@@ -399,7 +429,7 @@ function renderLyrics() {
         span.classList.add('active');
       }
     }
-    activeCharacterIndex = nextCharacterIndex;
+    activeCharacterIndex = nextCharacterIndex < 0 ? characters.length - 1 : nextCharacterIndex;
     lastKaraokeTime = currentTime;
     lyrics.hidden = false;
     return;
@@ -409,6 +439,9 @@ function renderLyrics() {
     : null;
   if (renderedKaraokeLine) lyrics.replaceChildren();
   renderedKaraokeLine = null;
+  renderedKaraokeNextLine = null;
+  renderedKaraokeLineIsTop = null;
+  activeKaraokeRow = null;
   activeCharacterIndex = -1;
   lastKaraokeTime = currentTime;
   if (renderedTimedLine !== timedLine) lyrics.textContent = timedLine?.text || '';
@@ -525,6 +558,9 @@ async function loadMedia(nextMedia, senderId) {
   if (loadId !== audioSourceChangeId) return;
   media = { ...nextMedia, lyrics: timedLyrics, karaokeLines };
   renderedKaraokeLine = null;
+  renderedKaraokeNextLine = null;
+  renderedKaraokeLineIsTop = null;
+  activeKaraokeRow = null;
   renderedTimedLine = null;
   activeCharacterIndex = -1;
   lastKaraokeTime = 0;

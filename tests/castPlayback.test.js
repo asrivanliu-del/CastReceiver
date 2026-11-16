@@ -4,6 +4,7 @@ import {
   getBufferedSecondsAhead,
   getAudioSourceRoute,
   getKaraokeCharacterState,
+  getKaraokeLinePair,
   getPlaybackClockElement,
   getStemAudioMuteState,
   getStartupBufferSeconds,
@@ -132,6 +133,32 @@ test('computes karaoke highlight state at character boundaries', () => {
   assert.deepEqual(getKaraokeCharacterState(2, character), { active: false, complete: false, fillPercent: 0 });
   assert.deepEqual(getKaraokeCharacterState(3, character), { active: true, complete: false, fillPercent: 50 });
   assert.deepEqual(getKaraokeCharacterState(4, character), { active: false, complete: true, fillPercent: 0 });
+});
+
+test('keeps the active and upcoming karaoke lines through gaps and alternates active rows', () => {
+  const lines = [
+    { start: 2, end: 3, text: '第一句', characters: [] },
+    { start: 4, end: 5, text: '第二句', characters: [] },
+    { start: 6, end: 7, text: '第三句', characters: [] }
+  ];
+
+  assert.deepEqual(getKaraokeLinePair(lines, 2.5), {
+    currentLine: lines[0],
+    nextLine: lines[1],
+    currentLineIsTop: true
+  });
+  assert.deepEqual(getKaraokeLinePair(lines, 3.5), {
+    currentLine: lines[0],
+    nextLine: lines[1],
+    currentLineIsTop: true
+  });
+  assert.deepEqual(getKaraokeLinePair(lines, 4.5), {
+    currentLine: lines[1],
+    nextLine: lines[2],
+    currentLineIsTop: false
+  });
+  assert.equal(getKaraokeLinePair(lines, 1.5), null);
+  assert.equal(getKaraokeLinePair(lines, 7.5), null);
 });
 
 test('waits for media metadata before allowing source seeking', async () => {

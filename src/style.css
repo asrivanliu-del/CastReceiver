@@ -75,13 +75,12 @@ body,
   z-index: 5;
   left: 50%;
   bottom: 9%;
-  width: max-content;
+  width: 80%;
   max-width: calc(100% - 48px);
   padding: 1px 12px;
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 8px;
   background: rgba(0, 0, 0, 0.72);
-  text-align: center;
   font-size: clamp(22px, 3.2vw, 48px);
   font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-weight: 700;
@@ -91,6 +90,18 @@ body,
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.28);
   transform: translateX(-50%);
   pointer-events: none;
+}
+
+.karaoke-subtitle-line {
+  width: 100%;
+}
+
+.karaoke-subtitle-top-line {
+  text-align: left;
+}
+
+.karaoke-subtitle-bottom-line {
+  text-align: right;
 }
 
 .karaoke-character {

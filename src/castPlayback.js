@@ -3,6 +3,24 @@ export function getSubtitleTime(isVideo, videoTime, activeTime) {
   return Number.isFinite(time) ? Math.max(0, time) : 0;
 }
 
+export function getKaraokeLinePair(lines, currentTime) {
+  if (!Array.isArray(lines) || !Number.isFinite(currentTime)) return null;
+  let currentIndex = -1;
+  for (let index = 0; index < lines.length; index++) {
+    if (lines[index].start <= currentTime) currentIndex = index;
+  }
+  if (currentIndex < 0) return null;
+
+  const currentLine = lines[currentIndex];
+  const nextLine = lines[currentIndex + 1] || null;
+  if (currentTime > currentLine.end && !nextLine) return null;
+  return {
+    currentLine,
+    nextLine,
+    currentLineIsTop: currentIndex % 2 === 0
+  };
+}
+
 export function getPlaybackClockElement(isVideo, videoElement, activeElement) {
   return isVideo ? videoElement : activeElement;
 }
