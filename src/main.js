@@ -401,8 +401,6 @@ async function selectAudioSource(source, position, changeId) {
     audio.pause();
     activeElement = video;
     activeSource = source;
-    audio.removeAttribute('src');
-    audio.load();
     setVideoAudioMuted(false);
     ensureAudioGraph(video);
     configureEffects(mediaForChange.pan || 0, mediaForChange.transpose || 0);
@@ -410,7 +408,6 @@ async function selectAudioSource(source, position, changeId) {
   }
   if (mediaForChange.isVideo) {
     ensureAudioGraph(video);
-    setVideoAudioMuted(route.muteVideo);
   }
   audio.crossOrigin = 'anonymous';
   const resolvedSourceUrl = new URL(route.url, document.baseURI).href;
@@ -420,7 +417,12 @@ async function selectAudioSource(source, position, changeId) {
   }
   await waitForMediaMetadata(audio);
   if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
-  audio.currentTime = currentTime;
+  const sourceTime = getSubtitleTime(mediaForChange.isVideo, video.currentTime, currentTime);
+  audio.currentTime = sourceTime;
+  if (mediaForChange.isVideo) {
+    await waitForMediaBuffer(audio, sourceTime, 2, 20000);
+    if (changeId !== audioSourceChangeId || media !== mediaForChange) return false;
+  }
   activeElement = audio;
   activeSource = source;
   ensureAudioGraph(activeElement);
@@ -462,6 +464,9 @@ async function changeAudioSource(source, senderId) {
   if (wasPlaying && intentId === playbackIntentId && activeElement) {
     await activeElement.play();
     if (mediaForChange?.isVideo && video.paused) await video.play();
+  }
+  if (mediaForChange?.isVideo && activeSource !== 'original') {
+    setVideoAudioMuted(true);
   }
   const playbackClock = getPlaybackClockElement(media?.isVideo, video, activeElement);
   if (playbackClock) {
@@ -534,7 +539,7 @@ async function loadMedia(nextMedia, senderId) {
       waitForMediaBuffer(
         element,
         nextMedia.currentTime || 0,
-        getStartupBufferSeconds(element === video),
+        getStartupBufferSeconds(nextMedia.isVideo),
         20000,
         loadController.signal
       )));
@@ -545,8 +550,9 @@ async function loadMedia(nextMedia, senderId) {
   if (loadId !== audioSourceChangeId) return;
   if (nextMedia.autoplay) {
     await audioContext.resume();
-    await activeElement.play();
-    if (activeElement !== video && nextMedia.isVideo) await video.play();
+    const playPromises = [activeElement.play()];
+    if (activeElement !== video && nextMedia.isVideo) playPromises.push(video.play());
+    await Promise.all(playPromises);
   }
   sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
 }

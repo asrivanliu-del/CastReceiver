@@ -59,12 +59,10 @@ test('routes Video original audio through the video and alternate audio through 
 
   assert.deepEqual(getAudioSourceRoute(media, 'accompaniment'), {
     url: media.accompanimentUrl,
-    muteVideo: true,
     useVideoElement: false
   });
   assert.deepEqual(getAudioSourceRoute(media, 'original'), {
     url: media.url,
-    muteVideo: false,
     useVideoElement: true
   });
 });
@@ -77,13 +75,12 @@ test('keeps audio-only Karaoke source fallback behavior', () => {
 
   assert.deepEqual(getAudioSourceRoute(media, 'accompaniment', 'accompaniment'), {
     url: media.url,
-    muteVideo: false,
     useVideoElement: false
   });
 });
 
 test('buffers video longer than audio before playback starts', () => {
-  assert.ok(getStartupBufferSeconds(true) >= 8);
+  assert.ok(getStartupBufferSeconds(true) >= 10);
   assert.ok(getStartupBufferSeconds(false) >= 5);
   assert.ok(getStartupBufferSeconds(true) > getStartupBufferSeconds(false));
 });
