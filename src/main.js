@@ -3,6 +3,7 @@ import {
   getKaraokeCharacterState,
   getAudioSourceRoute,
   getPlaybackClockElement,
+  getStartupBufferSeconds,
   getSubtitleTime,
   setMediaElementAudioMuted,
   waitForFirstVideoFrame,
@@ -396,6 +397,17 @@ async function selectAudioSource(source, position, changeId) {
   const currentTime = Number.isFinite(position) ? Math.max(0, position) : 0;
   const route = getAudioSourceRoute(mediaForChange, source, activeSource);
   if (!route.url) throw new Error(`The ${source} track is unavailable.`);
+  if (route.useVideoElement) {
+    audio.pause();
+    activeElement = video;
+    activeSource = source;
+    audio.removeAttribute('src');
+    audio.load();
+    setVideoAudioMuted(false);
+    ensureAudioGraph(video);
+    configureEffects(mediaForChange.pan || 0, mediaForChange.transpose || 0);
+    return true;
+  }
   if (mediaForChange.isVideo) {
     ensureAudioGraph(video);
     setVideoAudioMuted(route.muteVideo);
@@ -519,7 +531,13 @@ async function loadMedia(nextMedia, senderId) {
   if (nextMedia.isVideo && activeElement !== video) bufferTargets.add(video);
   try {
     await Promise.all([...bufferTargets].map(element =>
-      waitForMediaBuffer(element, nextMedia.currentTime || 0, 3, 20000, loadController.signal)));
+      waitForMediaBuffer(
+        element,
+        nextMedia.currentTime || 0,
+        getStartupBufferSeconds(element === video),
+        20000,
+        loadController.signal
+      )));
   } catch (error) {
     if (loadId !== audioSourceChangeId) return;
     throw error;

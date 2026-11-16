@@ -24,7 +24,15 @@ export function getAudioSourceRoute(media, source, activeSource = media.audioSou
     : source === 'vocals'
       ? media.vocalsUrl || (!media.isVideo && activeSource === source ? media.url : undefined)
       : media.accompanimentUrl || (!media.isVideo && activeSource === source ? media.url : undefined);
-  return { url, muteVideo: media.isVideo };
+  return {
+    url,
+    muteVideo: media.isVideo && source !== 'original',
+    useVideoElement: media.isVideo && source === 'original'
+  };
+}
+
+export function getStartupBufferSeconds(isVideo) {
+  return isVideo ? 8 : 5;
 }
 
 export function getKaraokeCharacterState(currentTime, character) {

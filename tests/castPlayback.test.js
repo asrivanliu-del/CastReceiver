@@ -5,6 +5,7 @@ import {
   getAudioSourceRoute,
   getKaraokeCharacterState,
   getPlaybackClockElement,
+  getStartupBufferSeconds,
   getSubtitleTime,
   setMediaElementAudioMuted,
   waitForFirstVideoFrame,
@@ -48,7 +49,7 @@ test('updates the video gain value when precise AudioParam scheduling is unavail
   assert.equal(gainNode.gain.value, 0);
 });
 
-test('routes Video original and alternate audio through the dedicated audio element', () => {
+test('routes Video original audio through the video and alternate audio through the dedicated audio element', () => {
   const media = {
     url: 'https://receiver.example/cast/video',
     isVideo: true,
@@ -58,11 +59,13 @@ test('routes Video original and alternate audio through the dedicated audio elem
 
   assert.deepEqual(getAudioSourceRoute(media, 'accompaniment'), {
     url: media.accompanimentUrl,
-    muteVideo: true
+    muteVideo: true,
+    useVideoElement: false
   });
   assert.deepEqual(getAudioSourceRoute(media, 'original'), {
     url: media.url,
-    muteVideo: true
+    muteVideo: false,
+    useVideoElement: true
   });
 });
 
@@ -74,8 +77,15 @@ test('keeps audio-only Karaoke source fallback behavior', () => {
 
   assert.deepEqual(getAudioSourceRoute(media, 'accompaniment', 'accompaniment'), {
     url: media.url,
-    muteVideo: false
+    muteVideo: false,
+    useVideoElement: false
   });
+});
+
+test('buffers video longer than audio before playback starts', () => {
+  assert.ok(getStartupBufferSeconds(true) >= 8);
+  assert.ok(getStartupBufferSeconds(false) >= 5);
+  assert.ok(getStartupBufferSeconds(true) > getStartupBufferSeconds(false));
 });
 
 test('computes karaoke highlight state at character boundaries', () => {
