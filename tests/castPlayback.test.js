@@ -49,7 +49,7 @@ test('updates the video gain value when precise AudioParam scheduling is unavail
   assert.equal(gainNode.gain.value, 0);
 });
 
-test('routes Video original audio through the video and alternate audio through the dedicated audio element', () => {
+test('routes Video original and alternate audio through the dedicated audio element', () => {
   const media = {
     url: 'https://receiver.example/cast/video',
     isVideo: true,
@@ -64,8 +64,8 @@ test('routes Video original audio through the video and alternate audio through 
   });
   assert.deepEqual(getAudioSourceRoute(media, 'original'), {
     url: media.url,
-    muteVideo: false,
-    useVideoElement: true
+    muteVideo: true,
+    useVideoElement: false
   });
 });
 

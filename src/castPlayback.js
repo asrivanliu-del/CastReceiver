@@ -26,8 +26,8 @@ export function getAudioSourceRoute(media, source, activeSource = media.audioSou
       : media.accompanimentUrl || (!media.isVideo && activeSource === source ? media.url : undefined);
   return {
     url,
-    muteVideo: media.isVideo && source !== 'original',
-    useVideoElement: media.isVideo && source === 'original'
+    muteVideo: media.isVideo,
+    useVideoElement: false
   };
 }
 
