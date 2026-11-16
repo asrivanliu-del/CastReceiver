@@ -4,6 +4,7 @@ import {
   getBufferedSecondsAhead,
   getAudioSourceRoute,
   getKaraokeCharacterState,
+  getPlaybackClockElement,
   getSubtitleTime,
   setMediaElementAudioMuted,
   waitForFirstVideoFrame,
@@ -15,6 +16,13 @@ test('uses video time as the subtitle clock while an alternate audio track is ac
   assert.equal(getSubtitleTime(true, 12.5, 11.9), 12.5);
   assert.equal(getSubtitleTime(false, 12.5, 11.9), 11.9);
   assert.equal(getSubtitleTime(true, Number.NaN, 11.9), 0);
+});
+
+test('keeps video as the playback clock while alternate audio sources switch', () => {
+  const video = { currentTime: 12.5, paused: false };
+  const accompaniment = { currentTime: 12.4, paused: true };
+  assert.equal(getPlaybackClockElement(true, video, accompaniment), video);
+  assert.equal(getPlaybackClockElement(false, video, accompaniment), accompaniment);
 });
 
 test('mutes the video element and its Web Audio route for alternate audio', () => {

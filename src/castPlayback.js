@@ -3,6 +3,10 @@ export function getSubtitleTime(isVideo, videoTime, activeTime) {
   return Number.isFinite(time) ? Math.max(0, time) : 0;
 }
 
+export function getPlaybackClockElement(isVideo, videoElement, activeElement) {
+  return isVideo ? videoElement : activeElement;
+}
+
 export function setMediaElementAudioMuted(element, muted, gainNode, currentTime = 0) {
   element.muted = muted;
   if (!gainNode) return;

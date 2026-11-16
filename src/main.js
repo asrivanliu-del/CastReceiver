@@ -2,6 +2,7 @@ import { SoundTouch } from 'soundtouchjs';
 import {
   getKaraokeCharacterState,
   getAudioSourceRoute,
+  getPlaybackClockElement,
   getSubtitleTime,
   setMediaElementAudioMuted,
   waitForFirstVideoFrame,
@@ -24,6 +25,7 @@ let media = null;
 let activeElement = null;
 let activeSource = 'original';
 let mediaLoadController = null;
+let playbackIntentId = 0;
 let audioContext = null;
 let gainNode = null;
 let pannerNode = null;
@@ -46,11 +48,12 @@ let mirrorNegotiationId = 0;
 let mirrorReadySent = false;
 
 function sendStatus(senderId, state, error) {
+  const clock = getPlaybackClockElement(media?.isVideo, video, activeElement);
   const data = {
     type: 'STATUS',
     state,
-    currentTime: activeElement?.currentTime || 0,
-    duration: Number.isFinite(activeElement?.duration) ? activeElement.duration : 0,
+    currentTime: clock?.currentTime || 0,
+    duration: Number.isFinite(clock?.duration) ? clock.duration : 0,
     ...(error ? { error } : {})
   };
   try {
@@ -416,7 +419,8 @@ async function selectAudioSource(source, position, changeId) {
 function updateLyricsFrame() {
   lyricsAnimationFrame = 0;
   renderLyrics();
-  if (activeElement && !activeElement.paused && media?.karaokeLines?.length) {
+  const clock = getPlaybackClockElement(media?.isVideo, video, activeElement);
+  if (clock && !clock.paused && media?.karaokeLines?.length) {
     lyricsAnimationFrame = window.requestAnimationFrame(updateLyricsFrame);
   }
 }
@@ -435,14 +439,21 @@ function stopLyricsAnimation() {
 
 async function changeAudioSource(source, senderId) {
   const changeId = ++audioSourceChangeId;
-  const position = getSubtitleTime(media?.isVideo, video.currentTime, activeElement?.currentTime);
-  const wasPlaying = media?.isVideo ? !video.paused : !!activeElement && !activeElement.paused;
+  const mediaForChange = media;
+  const clock = getPlaybackClockElement(mediaForChange?.isVideo, video, activeElement);
+  const position = getSubtitleTime(mediaForChange?.isVideo, video.currentTime, activeElement?.currentTime);
+  const wasPlaying = !!clock && !clock.paused;
+  const intentId = playbackIntentId;
   const changed = await selectAudioSource(source, position, changeId);
   if (!changed || changeId !== audioSourceChangeId) return;
   if (audioContext?.state === 'suspended') await audioContext.resume();
-  if (wasPlaying && activeElement) await activeElement.play();
-  if (activeElement) {
-    sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
+  if (wasPlaying && intentId === playbackIntentId && activeElement) {
+    await activeElement.play();
+    if (mediaForChange?.isVideo && video.paused) await video.play();
+  }
+  const playbackClock = getPlaybackClockElement(media?.isVideo, video, activeElement);
+  if (playbackClock) {
+    sendStatus(senderId, playbackClock.paused ? 'paused' : 'playing');
   }
 }
 
@@ -451,6 +462,7 @@ async function loadMedia(nextMedia, senderId) {
   if (!isValidMediaPayload(nextMedia)) {
     throw new Error('Invalid media description.');
   }
+  playbackIntentId++;
   mediaLoadController?.abort();
   const loadController = new AbortController();
   mediaLoadController = loadController;
@@ -542,11 +554,13 @@ function handleCommand(event) {
         stopMirrorConnection();
         return;
       case 'PLAY':
+        playbackIntentId++;
         void audioContext?.resume();
         if (activeElement?.paused) void activeElement.play().catch(error => sendStatus(event.senderId, 'error', error.message));
         if (media?.isVideo && activeElement !== video && video.paused) void video.play();
         return;
       case 'PAUSE':
+        playbackIntentId++;
         video.pause();
         audio.pause();
         sendStatus(event.senderId, 'paused');
@@ -574,6 +588,7 @@ function handleCommand(event) {
         }
         return;
       case 'STOP':
+        playbackIntentId++;
         audioSourceChangeId++;
         mediaLoadController?.abort();
         mediaLoadController = null;
@@ -608,17 +623,25 @@ for (const element of [video, audio]) {
     }
   });
   element.addEventListener('play', () => {
-    if (element === activeElement) startLyricsAnimation();
-    sendStatus(undefined, 'playing');
+    const clock = getPlaybackClockElement(media?.isVideo, video, activeElement);
+    if (element === clock) {
+      startLyricsAnimation();
+      sendStatus(undefined, 'playing');
+    }
   });
   element.addEventListener('pause', () => {
-    if (element === activeElement) {
+    const clock = getPlaybackClockElement(media?.isVideo, video, activeElement);
+    if (element === clock) {
       stopLyricsAnimation();
       sendStatus(undefined, 'paused');
     }
   });
   element.addEventListener('seeked', renderLyrics);
-  element.addEventListener('ended', () => sendStatus(undefined, 'ended'));
+  element.addEventListener('ended', () => {
+    if (element === getPlaybackClockElement(media?.isVideo, video, activeElement)) {
+      sendStatus(undefined, 'ended');
+    }
+  });
   element.addEventListener('error', () => {
     if (element !== activeElement) return;
     const mediaError = element.error;
