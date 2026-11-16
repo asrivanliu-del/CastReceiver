@@ -7,6 +7,7 @@ import {
   getStemAudioMuteState,
   hasParallelStemSources,
   getStartupBufferSeconds,
+  sortKaraokeLines,
   getSubtitleTime,
   isParallelStemVideo,
   setMediaElementAudioMuted,
@@ -556,7 +557,7 @@ async function loadMedia(nextMedia, senderId) {
     loadJsonAsset(nextMedia.karaokeUrl, 'karaoke lyrics')
   ]);
   if (loadId !== audioSourceChangeId) return;
-  media = { ...nextMedia, lyrics: timedLyrics, karaokeLines };
+  media = { ...nextMedia, lyrics: timedLyrics, karaokeLines: sortKaraokeLines(karaokeLines) };
   renderedKaraokeLine = null;
   renderedKaraokeNextLine = null;
   renderedKaraokeLineIsTop = null;

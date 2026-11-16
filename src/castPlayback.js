@@ -3,6 +3,10 @@ export function getSubtitleTime(isVideo, videoTime, activeTime) {
   return Number.isFinite(time) ? Math.max(0, time) : 0;
 }
 
+export function sortKaraokeLines(lines) {
+  return [...lines].sort((left, right) => left.start - right.start);
+}
+
 export function getKaraokeLinePair(lines, currentTime) {
   if (!Array.isArray(lines) || !Number.isFinite(currentTime)) return null;
   let currentIndex = -1;

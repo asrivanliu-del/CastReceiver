@@ -12,6 +12,7 @@ import {
   hasParallelStemSources,
   isParallelStemVideo,
   setMediaElementAudioMuted,
+  sortKaraokeLines,
   synchronizeAudioElements,
   waitForFirstVideoFrame,
   waitForMediaBuffer,
@@ -136,12 +137,15 @@ test('computes karaoke highlight state at character boundaries', () => {
 });
 
 test('keeps the active and upcoming karaoke lines through gaps and alternates active rows', () => {
-  const lines = [
-    { start: 2, end: 3, text: '第一句', characters: [] },
+  const unsortedLines = [
     { start: 4, end: 5, text: '第二句', characters: [] },
-    { start: 6, end: 7, text: '第三句', characters: [] }
+    { start: 6, end: 7, text: '第三句', characters: [] },
+    { start: 2, end: 3, text: '第一句', characters: [] },
   ];
+  const lines = sortKaraokeLines(unsortedLines);
 
+  assert.deepEqual(lines.map(line => line.start), [2, 4, 6]);
+  assert.deepEqual(unsortedLines.map(line => line.start), [4, 6, 2]);
   assert.deepEqual(getKaraokeLinePair(lines, 2.5), {
     currentLine: lines[0],
     nextLine: lines[1],
