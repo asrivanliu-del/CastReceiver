@@ -7,6 +7,31 @@ export function getPlaybackClockElement(isVideo, videoElement, activeElement) {
   return isVideo ? videoElement : activeElement;
 }
 
+export function isParallelStemVideo(media) {
+  return media?.isVideo === true && media.audioSource !== undefined;
+}
+
+export function hasParallelStemSources(media) {
+  return !isParallelStemVideo(media) ||
+    (typeof media.accompanimentUrl === 'string' && typeof media.vocalsUrl === 'string');
+}
+
+export function getStemAudioMuteState(source) {
+  return {
+    accompanimentMuted: source === 'vocals',
+    vocalsMuted: source === 'accompaniment'
+  };
+}
+
+export function synchronizeAudioElements(masterTime, elements, threshold = 0.18) {
+  if (!Number.isFinite(masterTime)) return;
+  for (const element of elements) {
+    if (Number.isFinite(element.currentTime) && Math.abs(element.currentTime - masterTime) > threshold) {
+      element.currentTime = masterTime;
+    }
+  }
+}
+
 export function setMediaElementAudioMuted(element, muted, gainNode, currentTime = 0) {
   element.muted = muted;
   if (!gainNode) return;

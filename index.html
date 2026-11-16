@@ -8,8 +8,9 @@
   </head>
   <body>
     <main id="stage" aria-live="polite">
-      <video id="video" class="castMediaElement" playsinline></video>
-      <audio id="audio"></audio>
+      <video id="video" class="castMediaElement" playsinline preload="auto"></video>
+      <audio id="audio" preload="auto"></audio>
+      <audio id="vocalsAudio" preload="auto"></audio>
       <img id="cover" alt="">
       <section id="message">Waiting for MintPlayer…</section>
       <div id="lyrics" aria-label="Lyrics"></div>

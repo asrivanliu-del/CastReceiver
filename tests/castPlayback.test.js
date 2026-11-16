@@ -5,9 +5,13 @@ import {
   getAudioSourceRoute,
   getKaraokeCharacterState,
   getPlaybackClockElement,
+  getStemAudioMuteState,
   getStartupBufferSeconds,
   getSubtitleTime,
+  hasParallelStemSources,
+  isParallelStemVideo,
   setMediaElementAudioMuted,
+  synchronizeAudioElements,
   waitForFirstVideoFrame,
   waitForMediaBuffer,
   waitForMediaMetadata
@@ -24,6 +28,41 @@ test('keeps video as the playback clock while alternate audio sources switch', (
   const accompaniment = { currentTime: 12.4, paused: true };
   assert.equal(getPlaybackClockElement(true, video, accompaniment), video);
   assert.equal(getPlaybackClockElement(false, video, accompaniment), accompaniment);
+});
+
+test('requires both karaoke stems for video casting and keeps the selected source mapping', () => {
+  assert.equal(isParallelStemVideo({ isVideo: true }), false);
+  assert.equal(hasParallelStemSources({ isVideo: true }), true);
+  const media = { isVideo: true, audioSource: 'original' };
+  assert.equal(isParallelStemVideo(media), true);
+  assert.equal(hasParallelStemSources(media), false);
+  media.accompanimentUrl = 'https://receiver.example/cast/accompaniment';
+  media.vocalsUrl = 'https://receiver.example/cast/vocals';
+  assert.equal(hasParallelStemSources(media), true);
+  assert.deepEqual(getStemAudioMuteState('accompaniment'), {
+    accompanimentMuted: false,
+    vocalsMuted: true
+  });
+  assert.deepEqual(getStemAudioMuteState('vocals'), {
+    accompanimentMuted: true,
+    vocalsMuted: false
+  });
+  assert.deepEqual(getStemAudioMuteState('original'), {
+    accompanimentMuted: false,
+    vocalsMuted: false
+  });
+});
+
+test('keeps both stem audio elements synchronized to the video clock', () => {
+  const accompaniment = { currentTime: 9.7 };
+  const vocals = { currentTime: 9.9 };
+
+  synchronizeAudioElements(10, [accompaniment, vocals]);
+  assert.equal(accompaniment.currentTime, 10);
+  assert.equal(vocals.currentTime, 9.9);
+
+  synchronizeAudioElements(Number.NaN, [accompaniment, vocals]);
+  assert.equal(accompaniment.currentTime, 10);
 });
 
 test('mutes the video element and its Web Audio route for alternate audio', () => {
@@ -49,7 +88,7 @@ test('updates the video gain value when precise AudioParam scheduling is unavail
   assert.equal(gainNode.gain.value, 0);
 });
 
-test('routes Video original and alternate audio through the dedicated audio element', () => {
+test('routes non-karaoke video original and alternate audio through the dedicated audio element', () => {
   const media = {
     url: 'https://receiver.example/cast/video',
     isVideo: true,

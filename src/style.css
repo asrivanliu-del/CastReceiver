@@ -44,7 +44,8 @@ body,
   display: none;
 }
 
-#audio {
+#audio,
+#vocalsAudio {
   display: none;
 }
 

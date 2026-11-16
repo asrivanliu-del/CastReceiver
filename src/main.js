@@ -3,9 +3,13 @@ import {
   getKaraokeCharacterState,
   getAudioSourceRoute,
   getPlaybackClockElement,
+  getStemAudioMuteState,
+  hasParallelStemSources,
   getStartupBufferSeconds,
   getSubtitleTime,
+  isParallelStemVideo,
   setMediaElementAudioMuted,
+  synchronizeAudioElements,
   waitForFirstVideoFrame,
   waitForMediaBuffer,
   waitForMediaMetadata
@@ -16,6 +20,7 @@ const NAMESPACE = 'urn:x-cast:com.mintplayer.cast';
 const context = cast.framework.CastReceiverContext.getInstance();
 const video = document.querySelector('#video');
 const audio = document.querySelector('#audio');
+const vocalsAudio = document.querySelector('#vocalsAudio');
 const cover = document.querySelector('#cover');
 const lyrics = document.querySelector('#lyrics');
 const message = document.querySelector('#message');
@@ -28,14 +33,6 @@ let activeSource = 'original';
 let mediaLoadController = null;
 let playbackIntentId = 0;
 let audioContext = null;
-let gainNode = null;
-let pannerNode = null;
-let sourceNode = null;
-let pitchNode = null;
-let soundTouch = null;
-let pitchInput = null;
-let pitchOutput = null;
-let previousTranspose = 0;
 let statusTimer = 0;
 let audioSourceChangeId = 0;
 let lyricsAnimationFrame = 0;
@@ -71,6 +68,35 @@ function setMessage(text) {
 
 function setVideoAudioMuted(muted) {
   setMediaElementAudioMuted(video, muted, elements.get(video)?.gain, audioContext?.currentTime || 0);
+}
+
+function setElementAudioMuted(element, muted) {
+  setMediaElementAudioMuted(element, muted, elements.get(element)?.gain, audioContext?.currentTime || 0);
+}
+
+function synchronizeStemAudio(position = video.currentTime) {
+  if (!isParallelStemVideo(media) || !Number.isFinite(position)) return;
+  synchronizeAudioElements(position, [audio, vocalsAudio]);
+}
+
+function pauseMediaElements() {
+  video.pause();
+  audio.pause();
+  vocalsAudio.pause();
+}
+
+async function playMediaElements() {
+  try {
+    if (isParallelStemVideo(media)) {
+      await Promise.all([video.play(), audio.play(), vocalsAudio.play()]);
+      return;
+    }
+    if (activeElement) await activeElement.play();
+    if (media?.isVideo && activeElement !== video && video.paused) await video.play();
+  } catch (error) {
+    pauseMediaElements();
+    throw error;
+  }
 }
 
 function waitForIceGatheringComplete(peerConnection) {
@@ -197,27 +223,20 @@ function ensureAudioGraph(element) {
     source.connect(gain);
     gain.connect(panner);
     panner.connect(audioContext.destination);
-    elements.set(element, { source, gain, panner, pitchNode: null, soundTouch: null });
+    elements.set(element, { source, gain, panner, pitchNode: null, soundTouch: null, previousTranspose: 0 });
   }
-  const graph = elements.get(element);
-  sourceNode = graph.source;
-  gainNode = graph.gain;
-  pannerNode = graph.panner;
-  pitchNode = graph.pitchNode;
-  soundTouch = graph.soundTouch;
-  return graph;
+  return elements.get(element);
 }
 
-function clearPitchBuffers() {
+function clearPitchBuffers(soundTouch) {
   soundTouch?.inputBuffer.clear();
   soundTouch?.outputBuffer.clear();
   soundTouch?._intermediateBuffer?.clear();
   soundTouch?.clear();
 }
 
-function configureEffects(pan, transpose) {
-  if (!activeElement) return;
-  const graph = ensureAudioGraph(activeElement);
+function configureEffectsForElement(element, pan, transpose) {
+  const graph = ensureAudioGraph(element);
   graph.panner.pan.value = pan;
   if (transpose !== 0 && !graph.pitchNode) {
     graph.soundTouch = new SoundTouch();
@@ -237,13 +256,13 @@ function configureEffects(pan, transpose) {
       const rightOut = output.numberOfChannels > 1 ? output.getChannelData(1) : leftOut;
       const semitones = media?.transpose || 0;
       if (semitones === 0) {
-        if (previousTranspose !== 0) clearPitchBuffers();
-        previousTranspose = 0;
+        if (graph.previousTranspose !== 0) clearPitchBuffers(graph.soundTouch);
+        graph.previousTranspose = 0;
         leftOut.set(leftIn);
         if (rightOut !== leftOut) rightOut.set(rightIn);
         return;
       }
-      previousTranspose = semitones;
+      graph.previousTranspose = semitones;
       graph.soundTouch.pitchSemitones = semitones;
       inputSamples.fill(0);
       for (let frame = 0; frame < leftIn.length; frame++) {
@@ -265,19 +284,22 @@ function configureEffects(pan, transpose) {
     processor.connect(graph.gain);
     graph.pitchNode = processor;
     graph.soundTouch.pitchSemitones = transpose;
-    pitchNode = processor;
-    soundTouch = graph.soundTouch;
   } else if (transpose === 0 && graph.pitchNode) {
     graph.pitchNode.disconnect();
     graph.source.disconnect();
     graph.source.connect(graph.gain);
     graph.pitchNode = null;
     graph.soundTouch = null;
-    pitchNode = null;
-    soundTouch = null;
+    graph.previousTranspose = 0;
   } else if (graph.soundTouch) {
     graph.soundTouch.pitchSemitones = transpose;
   }
+}
+
+function configureEffects(pan, transpose) {
+  if (!media) return;
+  const targets = isParallelStemVideo(media) ? [audio, vocalsAudio] : activeElement ? [activeElement] : [];
+  for (const element of targets) configureEffectsForElement(element, pan, transpose);
   media.pan = pan;
   media.transpose = transpose;
 }
@@ -319,8 +341,11 @@ function isValidMediaPayload(value) {
       !Number.isInteger(value.transpose) ||
       value.transpose < -12 ||
       value.transpose > 12) return false;
+  if (value.audioSource !== undefined &&
+      !['original', 'accompaniment', 'vocals'].includes(value.audioSource)) return false;
   return ['accompanimentUrl', 'vocalsUrl', 'coverUrl', 'lyricsUrl', 'karaokeUrl'].every(key =>
-    value[key] === undefined || isSessionAssetUrl(value[key], value.url));
+    value[key] === undefined || isSessionAssetUrl(value[key], value.url)) &&
+    hasParallelStemSources(value);
 }
 
 async function loadJsonAsset(url, label) {
@@ -395,6 +420,20 @@ async function selectAudioSource(source, position, changeId) {
   if (!media) return false;
   const mediaForChange = media;
   const currentTime = Number.isFinite(position) ? Math.max(0, position) : 0;
+  if (isParallelStemVideo(mediaForChange)) {
+    if (!['original', 'accompaniment', 'vocals'].includes(source)) {
+      throw new Error(`The ${source} track is unavailable.`);
+    }
+    const muteState = getStemAudioMuteState(source);
+    setVideoAudioMuted(true);
+    setElementAudioMuted(audio, muteState.accompanimentMuted);
+    setElementAudioMuted(vocalsAudio, muteState.vocalsMuted);
+    activeElement = video;
+    activeSource = source;
+    synchronizeStemAudio(currentTime);
+    configureEffects(mediaForChange.pan || 0, mediaForChange.transpose || 0);
+    return true;
+  }
   const route = getAudioSourceRoute(mediaForChange, source, activeSource);
   if (!route.url) throw new Error(`The ${source} track is unavailable.`);
   if (route.useVideoElement) {
@@ -491,12 +530,13 @@ async function loadMedia(nextMedia, senderId) {
   lastKaraokeTime = 0;
   activeSource = nextMedia.audioSource || 'original';
   activeElement = null;
-  video.pause();
-  audio.pause();
+  pauseMediaElements();
   video.removeAttribute('src');
   audio.removeAttribute('src');
+  vocalsAudio.removeAttribute('src');
   video.load();
   audio.load();
+  vocalsAudio.load();
   setVideoAudioMuted(nextMedia.isVideo);
   setMessage('');
   cover.src = nextMedia.coverUrl || '';
@@ -507,9 +547,23 @@ async function loadMedia(nextMedia, senderId) {
     video.crossOrigin = 'anonymous';
     video.preload = 'auto';
     video.src = nextMedia.url;
-    await waitForMediaMetadata(video);
+    const metadataTargets = [video];
+    if (isParallelStemVideo(nextMedia)) {
+      audio.crossOrigin = 'anonymous';
+      audio.preload = 'auto';
+      audio.src = nextMedia.accompanimentUrl;
+      vocalsAudio.crossOrigin = 'anonymous';
+      vocalsAudio.preload = 'auto';
+      vocalsAudio.src = nextMedia.vocalsUrl;
+      metadataTargets.push(audio, vocalsAudio);
+    }
+    await Promise.all(metadataTargets.map(element => waitForMediaMetadata(element)));
     if (loadId !== audioSourceChangeId) return;
     video.currentTime = nextMedia.currentTime || 0;
+    if (isParallelStemVideo(nextMedia)) {
+      audio.currentTime = nextMedia.currentTime || 0;
+      vocalsAudio.currentTime = nextMedia.currentTime || 0;
+    }
     activeElement = video;
   } else {
     audio.crossOrigin = 'anonymous';
@@ -522,12 +576,22 @@ async function loadMedia(nextMedia, senderId) {
   }
   ensureAudioGraph(activeElement);
   configureEffects(nextMedia.pan || 0, nextMedia.transpose || 0);
-  if (nextMedia.isVideo || activeSource !== 'original') {
+  if (isParallelStemVideo(nextMedia)) {
+    ensureAudioGraph(audio);
+    ensureAudioGraph(vocalsAudio);
+    await selectAudioSource(activeSource, nextMedia.currentTime, loadId);
+    if (loadId !== audioSourceChangeId) return;
+  } else if (nextMedia.isVideo || activeSource !== 'original') {
     await selectAudioSource(activeSource, nextMedia.currentTime, loadId);
     if (loadId !== audioSourceChangeId) return;
   }
   const bufferTargets = new Set([activeElement]);
-  if (nextMedia.isVideo && activeElement !== video) bufferTargets.add(video);
+  if (isParallelStemVideo(nextMedia)) {
+    bufferTargets.add(audio);
+    bufferTargets.add(vocalsAudio);
+  } else if (nextMedia.isVideo && activeElement !== video) {
+    bufferTargets.add(video);
+  }
   try {
     await Promise.all([...bufferTargets].map(element =>
       waitForMediaBuffer(
@@ -544,8 +608,12 @@ async function loadMedia(nextMedia, senderId) {
   if (loadId !== audioSourceChangeId) return;
   if (nextMedia.autoplay) {
     await audioContext.resume();
-    await activeElement.play();
-    if (activeElement !== video && nextMedia.isVideo) await video.play();
+    try {
+      await playMediaElements();
+    } catch (error) {
+      pauseMediaElements();
+      throw error;
+    }
   }
   sendStatus(senderId, activeElement.paused ? 'paused' : 'playing');
 }
@@ -573,19 +641,22 @@ function handleCommand(event) {
       case 'PLAY':
         playbackIntentId++;
         void audioContext?.resume();
-        if (activeElement?.paused) void activeElement.play().catch(error => sendStatus(event.senderId, 'error', error.message));
-        if (media?.isVideo && activeElement !== video && video.paused) void video.play();
+        if (isParallelStemVideo(media) || activeElement?.paused) {
+          void playMediaElements().catch(error => sendStatus(event.senderId, 'error', error.message));
+        } else if (media?.isVideo && activeElement !== video && video.paused) {
+          void video.play().catch(error => sendStatus(event.senderId, 'error', error.message));
+        }
         return;
       case 'PAUSE':
         playbackIntentId++;
-        video.pause();
-        audio.pause();
+        pauseMediaElements();
         sendStatus(event.senderId, 'paused');
         return;
       case 'SEEK':
         if (typeof command.currentTime === 'number' && Number.isFinite(command.currentTime) && command.currentTime >= 0) {
-          video.currentTime = command.currentTime;
-          audio.currentTime = command.currentTime;
+          for (const element of [video, audio, vocalsAudio]) {
+            if (element.readyState > 0) element.currentTime = command.currentTime;
+          }
           sendStatus(event.senderId, 'paused');
         }
         return;
@@ -610,11 +681,13 @@ function handleCommand(event) {
         mediaLoadController?.abort();
         mediaLoadController = null;
         stopMirrorConnection();
-        video.pause();
-        audio.pause();
+        pauseMediaElements();
         video.removeAttribute('src');
         audio.removeAttribute('src');
+        vocalsAudio.removeAttribute('src');
         setVideoAudioMuted(false);
+        setElementAudioMuted(audio, false);
+        setElementAudioMuted(vocalsAudio, false);
         media = null;
         activeElement = null;
         setMessage('Waiting for MintPlayer…');
@@ -631,13 +704,12 @@ function handleCommand(event) {
 context.addCustomMessageListener(NAMESPACE, handleCommand);
 context.start();
 
-for (const element of [video, audio]) {
+for (const element of [video, audio, vocalsAudio]) {
   element.addEventListener('timeupdate', () => {
     renderLyrics();
-    if (element === video && media?.isVideo && activeElement === audio &&
-        !audio.paused && Math.abs(audio.currentTime - video.currentTime) > 0.18) {
-      audio.currentTime = video.currentTime;
-    }
+    if (element === video && isParallelStemVideo(media)) synchronizeStemAudio();
+    else if (element === video && media?.isVideo && activeElement === audio &&
+        !audio.paused && Math.abs(audio.currentTime - video.currentTime) > 0.18) audio.currentTime = video.currentTime;
   });
   element.addEventListener('play', () => {
     const clock = getPlaybackClockElement(media?.isVideo, video, activeElement);
@@ -653,14 +725,18 @@ for (const element of [video, audio]) {
       sendStatus(undefined, 'paused');
     }
   });
-  element.addEventListener('seeked', renderLyrics);
+  element.addEventListener('seeked', () => {
+    if (element === video && isParallelStemVideo(media)) synchronizeStemAudio();
+    renderLyrics();
+  });
   element.addEventListener('ended', () => {
     if (element === getPlaybackClockElement(media?.isVideo, video, activeElement)) {
       sendStatus(undefined, 'ended');
     }
   });
   element.addEventListener('error', () => {
-    if (element !== activeElement) return;
+    const requiredStem = isParallelStemVideo(media) && (element === audio || element === vocalsAudio);
+    if (element !== activeElement && !requiredStem) return;
     const mediaError = element.error;
     const mediaType = element === video ? 'video' : 'audio';
     const error = `Unable to load ${mediaType} for "${media?.title || 'media'}" (media error ${mediaError?.code || 'unknown'}).`;
@@ -678,7 +754,6 @@ context.addEventListener(cast.framework.system.EventType.SENDER_DISCONNECTED, ()
   if (context.getSenders().length === 0) {
     window.clearInterval(statusTimer);
     stopMirrorConnection();
-    video.pause();
-    audio.pause();
+    pauseMediaElements();
   }
 });
